@@ -302,23 +302,21 @@ def get_chain_diameter(ordered_chain):
 
 
 def get_chain_system_type_id(ordered_chain):
-    """Get the duct system type id from the chain."""
+    """Get the MechanicalSystemType id from the chain."""
     for el in ordered_chain:
-        if is_duct(el):
-            param = el.get_Parameter(BuiltInParameter.RBS_DUCT_SYSTEM_TYPE_PARAM)
-            if param and param.HasValue:
-                return param.AsElementId()
-    # fallback: try fittings
+        try:
+            mep_system = el.MEPSystem
+            if mep_system is not None:
+                return mep_system.GetTypeId()
+        except:
+            pass
     for el in ordered_chain:
-        conns = get_connectors(el)
-        for c in conns:
-            if c.DuctSystemType is not None:
-                try:
-                    param = el.get_Parameter(BuiltInParameter.RBS_DUCT_SYSTEM_TYPE_PARAM)
-                    if param and param.HasValue:
-                        return param.AsElementId()
-                except:
-                    pass
+        for c in get_connectors(el):
+            try:
+                if c.MEPSystem is not None:
+                    return c.MEPSystem.GetTypeId()
+            except:
+                pass
     return None
 
 
