@@ -376,11 +376,7 @@ def convert_chain(doc, ordered_chain, boundary_pairs, flex_type_id):
     for p in points:
         point_list.Add(p)
 
-    # Try creating with the system type; fall back to InvalidElementId
-    try:
-        flex = FlexDuct.Create(doc, flex_type_id, sys_type_id, level_id, point_list)
-    except:
-        flex = FlexDuct.Create(doc, flex_type_id, ElementId.InvalidElementId, level_id, point_list)
+    flex = FlexDuct.Create(doc, sys_type_id, flex_type_id, level_id, point_list)
 
     if diameter is not None:
         diam_param = flex.get_Parameter(BuiltInParameter.RBS_CURVE_DIAMETER_PARAM)
