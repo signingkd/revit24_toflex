@@ -1,0 +1,9 @@
+{
+  "builtin": "False",
+  "default_enabled": true,
+  "type": "extension",
+  "rocket_mode_compatible": true,
+  "name": "RigidToFlex",
+  "description": "Convert rigid ducts and fittings to flex ducts along the original path",
+  "author": "signi"
+}
