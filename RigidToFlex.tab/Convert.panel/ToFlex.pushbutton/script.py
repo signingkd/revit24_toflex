@@ -35,6 +35,7 @@ uidoc = revit.uidoc
 TOLERANCE = 0.001  # feet
 ARC_SEGMENTS = 16  # number of segments to approximate arcs in fittings
 GUIDE_POINT_DIST = 0.15  # feet (~5cm) - extra vertex distance from duct end near fittings
+STRAIGHT_VERTEX_SPACING = 3.28084  # feet (~1m) - vertex spacing along straight ducts
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +279,24 @@ def get_fitting_arc(element, entry_point):
     return arc_points
 
 
+def interpolate_straight(p0, p1, spacing):
+    """Generate intermediate points between p0 and p1 at given spacing.
+    Returns list including p0 and p1."""
+    dist = p0.DistanceTo(p1)
+    if dist <= spacing:
+        return [p0, p1]
+    n = int(math.ceil(dist / spacing))
+    result = []
+    for j in range(n + 1):
+        t = float(j) / n
+        result.append(XYZ(
+            p0.X + (p1.X - p0.X) * t,
+            p0.Y + (p1.Y - p0.Y) * t,
+            p0.Z + (p1.Z - p0.Z) * t,
+        ))
+    return result
+
+
 def extract_path_points(ordered_chain):
     """Extract ordered XYZ path points from a linearly ordered chain."""
     if not ordered_chain:
@@ -294,6 +313,7 @@ def extract_path_points(ordered_chain):
             p0 = curve.GetEndPoint(0)
             p1 = curve.GetEndPoint(1)
 
+            # orient p0 → p1 in chain direction
             if not points:
                 if i + 1 < len(ordered_chain):
                     next_el = ordered_chain[i + 1]
@@ -303,52 +323,47 @@ def extract_path_points(ordered_chain):
                     d1 = min(p0.DistanceTo(o) for o in next_origins) if next_origins else 1e10
                     if d1 < d0:
                         p0, p1 = p1, p0
-                # guide point at start if previous element is a fitting
-                if i > 0 and is_fitting(ordered_chain[i - 1]):
-                    duct_len = p0.DistanceTo(p1)
-                    if duct_len > GUIDE_POINT_DIST * 3:
-                        direction = XYZ(p1.X - p0.X, p1.Y - p0.Y, p1.Z - p0.Z).Normalize()
-                        guide = XYZ(p0.X + direction.X * GUIDE_POINT_DIST,
-                                    p0.Y + direction.Y * GUIDE_POINT_DIST,
-                                    p0.Z + direction.Z * GUIDE_POINT_DIST)
-                        points.append(p0)
-                        points.append(guide)
-                else:
-                    points.append(p0)
-                # guide point at end if next element is a fitting
-                if i + 1 < len(ordered_chain) and is_fitting(ordered_chain[i + 1]):
-                    duct_len = p0.DistanceTo(p1)
-                    if duct_len > GUIDE_POINT_DIST * 3:
-                        direction = XYZ(p0.X - p1.X, p0.Y - p1.Y, p0.Z - p1.Z).Normalize()
-                        guide = XYZ(p1.X + direction.X * GUIDE_POINT_DIST,
-                                    p1.Y + direction.Y * GUIDE_POINT_DIST,
-                                    p1.Z + direction.Z * GUIDE_POINT_DIST)
-                        points.append(guide)
-                points.append(p1)
             else:
                 if p1.DistanceTo(points[-1]) < p0.DistanceTo(points[-1]):
                     p0, p1 = p1, p0
                 if not points_almost_equal(p0, points[-1]):
                     points.append(p0)
-                # guide point at start if previous element is a fitting
-                if i > 0 and is_fitting(ordered_chain[i - 1]):
-                    duct_len = p0.DistanceTo(p1)
-                    if duct_len > GUIDE_POINT_DIST * 3:
-                        direction = XYZ(p1.X - p0.X, p1.Y - p0.Y, p1.Z - p0.Z).Normalize()
-                        guide = XYZ(p0.X + direction.X * GUIDE_POINT_DIST,
-                                    p0.Y + direction.Y * GUIDE_POINT_DIST,
-                                    p0.Z + direction.Z * GUIDE_POINT_DIST)
-                        if not points_almost_equal(guide, points[-1]):
-                            points.append(guide)
-                # guide point at end if next element is a fitting
-                if i + 1 < len(ordered_chain) and is_fitting(ordered_chain[i + 1]):
-                    duct_len = p0.DistanceTo(p1)
-                    if duct_len > GUIDE_POINT_DIST * 3:
-                        direction = XYZ(p0.X - p1.X, p0.Y - p1.Y, p0.Z - p1.Z).Normalize()
-                        guide = XYZ(p1.X + direction.X * GUIDE_POINT_DIST,
-                                    p1.Y + direction.Y * GUIDE_POINT_DIST,
-                                    p1.Z + direction.Z * GUIDE_POINT_DIST)
-                        points.append(guide)
+
+            has_prev_fitting = i > 0 and is_fitting(ordered_chain[i - 1])
+            has_next_fitting = i + 1 < len(ordered_chain) and is_fitting(ordered_chain[i + 1])
+            duct_len = p0.DistanceTo(p1)
+            direction = XYZ(p1.X - p0.X, p1.Y - p0.Y, p1.Z - p0.Z).Normalize()
+
+            # start of this duct segment
+            inner_start = p0
+            inner_end = p1
+
+            if has_prev_fitting and duct_len > GUIDE_POINT_DIST * 3:
+                guide = XYZ(p0.X + direction.X * GUIDE_POINT_DIST,
+                            p0.Y + direction.Y * GUIDE_POINT_DIST,
+                            p0.Z + direction.Z * GUIDE_POINT_DIST)
+                if not points or not points_almost_equal(p0, points[-1]):
+                    points.append(p0)
+                points.append(guide)
+                inner_start = guide
+
+            if has_next_fitting and duct_len > GUIDE_POINT_DIST * 3:
+                rev_dir = XYZ(-direction.X, -direction.Y, -direction.Z)
+                guide_end = XYZ(p1.X + rev_dir.X * GUIDE_POINT_DIST,
+                                p1.Y + rev_dir.Y * GUIDE_POINT_DIST,
+                                p1.Z + rev_dir.Z * GUIDE_POINT_DIST)
+                inner_end = guide_end
+
+            # add intermediate vertices along straight section
+            straight_pts = interpolate_straight(inner_start, inner_end, STRAIGHT_VERTEX_SPACING)
+            for sp in straight_pts:
+                if not points or not points_almost_equal(sp, points[-1]):
+                    points.append(sp)
+
+            if has_next_fitting and duct_len > GUIDE_POINT_DIST * 3:
+                if not points_almost_equal(p1, points[-1]):
+                    points.append(p1)
+            elif not points_almost_equal(p1, points[-1]):
                 points.append(p1)
 
         elif is_fitting(el):
