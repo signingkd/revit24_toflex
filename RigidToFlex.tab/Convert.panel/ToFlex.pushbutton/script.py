@@ -544,6 +544,17 @@ def convert_chain(doc, ordered_chain, boundary_pairs, flex_type_id, size_info):
                 if p and not p.IsReadOnly:
                     p.Set(size_info["height"])
 
+    # set tangent vectors at start/end to match duct direction
+    if len(points) >= 2:
+        try:
+            flex.StartTangent = (points[1] - points[0]).Normalize()
+        except:
+            pass
+        try:
+            flex.EndTangent = (points[-1] - points[-2]).Normalize()
+        except:
+            pass
+
     # reconnect boundaries
     flex_conns = get_connectors(flex)
     for internal_conn, external_conn in boundary_pairs:
