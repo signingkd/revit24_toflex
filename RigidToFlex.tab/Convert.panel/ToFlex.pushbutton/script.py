@@ -372,6 +372,27 @@ def convert_chain(doc, ordered_chain, boundary_pairs, flex_type_id):
         logger.warning("Chain skipped: could not determine system type or level.")
         return None, 0
 
+    # DEBUG: print what we're passing to FlexDuct.Create
+    sys_type_el = doc.GetElement(sys_type_id)
+    output.print_md("**DEBUG** flex_type_id={}, sys_type_id={}, sys_type_class={}, sys_type_name={}, level_id={}, points={}".format(
+        flex_type_id, sys_type_id,
+        type(sys_type_el).__name__ if sys_type_el else "None",
+        sys_type_el.Name if sys_type_el else "None",
+        level_id, len(points)))
+    # also dump all MechanicalSystemType elements in doc
+    output.print_md("**DEBUG** All MechanicalSystemType in doc:")
+    for mst in FilteredElementCollector(doc).OfClass(MechanicalSystemType):
+        output.print_md("  - Id={}, Name={}, Classification={}".format(
+            mst.Id, mst.Name, mst.SystemClassification))
+    # dump connector info
+    for el in ordered_chain:
+        for c in get_connectors(el):
+            try:
+                output.print_md("**DEBUG** Connector on {}: DuctSystemType={}, Domain={}".format(
+                    el.Id, c.DuctSystemType, c.Domain))
+            except:
+                pass
+
     point_list = List[XYZ]()
     for p in points:
         point_list.Add(p)
