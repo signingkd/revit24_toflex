@@ -19,7 +19,7 @@ from Autodesk.Revit.DB import (
     XYZ,
     Transaction,
 )
-from Autodesk.Revit.DB.Mechanical import Duct, FlexDuct, FlexDuctType
+from Autodesk.Revit.DB.Mechanical import Duct, FlexDuct, FlexDuctType, MechanicalSystemType
 from System.Collections.Generic import List
 
 logger = script.get_logger()
@@ -302,21 +302,41 @@ def get_chain_diameter(ordered_chain):
 
 
 def get_chain_system_type_id(ordered_chain):
-    """Get the MechanicalSystemType id from the chain."""
-    for el in ordered_chain:
-        try:
-            mep_system = el.MEPSystem
-            if mep_system is not None:
-                return mep_system.GetTypeId()
-        except:
-            pass
+    """Get the MechanicalSystemType id from the chain.
+
+    FlexDuct.Create needs a MechanicalSystemType ElementId.
+    We find it by matching the connector's DuctSystemType enum
+    to a MechanicalSystemType in the document.
+    """
+    # step 1: get DuctSystemType enum from a connector
+    duct_sys_type_enum = None
     for el in ordered_chain:
         for c in get_connectors(el):
             try:
-                if c.MEPSystem is not None:
-                    return c.MEPSystem.GetTypeId()
+                dst = c.DuctSystemType
+                if dst is not None:
+                    duct_sys_type_enum = dst
+                    break
             except:
                 pass
+        if duct_sys_type_enum is not None:
+            break
+
+    if duct_sys_type_enum is None:
+        return None
+
+    # step 2: find a MechanicalSystemType whose SystemClassification matches
+    for mst in FilteredElementCollector(doc).OfClass(MechanicalSystemType):
+        try:
+            if mst.SystemClassification == duct_sys_type_enum:
+                return mst.Id
+        except:
+            pass
+
+    # step 3: fallback — return the first MechanicalSystemType
+    for mst in FilteredElementCollector(doc).OfClass(MechanicalSystemType):
+        return mst.Id
+
     return None
 
 
