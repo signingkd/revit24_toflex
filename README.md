@@ -32,7 +32,7 @@ Then reload pyRevit or restart Revit.
 ## Usage
 
 1. Select rigid ducts and/or duct fittings in Revit
-2. Go to the **RigidToFlex** tab → **Convert** panel → **Rigid To Flex** button
+2. Go to the **pyRevit** tab → **Convert** panel → **Rigid To Flex** button
 3. The selected elements are replaced with flex ducts following the original path
 
 ## Requirements
