@@ -6,6 +6,7 @@ __title__ = "Rigid\nTo Flex"
 __doc__ = "Kijelölt rigid ductokat és fittingeket flex ductra cseréli a megrajzolt nyomvonalon."
 __author__ = "signi"
 
+import math
 import clr
 clr.AddReference("RevitAPI")
 clr.AddReference("RevitServices")
@@ -18,6 +19,9 @@ from Autodesk.Revit.DB import (
     ElementId,
     XYZ,
     Transaction,
+    Options,
+    Line,
+    Arc,
 )
 from Autodesk.Revit.DB.Mechanical import Duct, FlexDuct, FlexDuctType, MechanicalSystemType
 from System.Collections.Generic import List
@@ -29,6 +33,7 @@ doc = revit.doc
 uidoc = revit.uidoc
 
 TOLERANCE = 0.001  # feet
+ARC_SEGMENTS = 8   # number of segments to approximate arcs in fittings
 
 
 # ---------------------------------------------------------------------------
@@ -61,12 +66,16 @@ def is_fitting(element):
     return element.Category.Id == ElementId(BuiltInCategory.OST_DuctFitting)
 
 
-def is_round(element):
-    """Check if all connectors are round."""
-    conns = get_connectors(element)
-    if not conns:
-        return False
-    return all(c.Shape == DB.ConnectorProfileType.Round for c in conns)
+def get_connector_shape(element):
+    """Return the shape of the first connector: 'round', 'rect', or None."""
+    for c in get_connectors(element):
+        if c.Shape == DB.ConnectorProfileType.Round:
+            return "round"
+        elif c.Shape == DB.ConnectorProfileType.Rectangular:
+            return "rect"
+        elif c.Shape == DB.ConnectorProfileType.Oval:
+            return "oval"
+    return None
 
 
 def points_almost_equal(p1, p2):
@@ -82,6 +91,39 @@ def get_connected_pairs(connector, selected_ids):
         if owner.Id == connector.Owner.Id:
             continue
         yield (connector, ref, owner)
+
+
+def get_fitting_geometry_curves(element):
+    """Extract geometry curves (arcs, lines) from a fitting's geometry."""
+    curves = []
+    try:
+        opt = Options()
+        opt.ComputeReferences = False
+        opt.DetailLevel = DB.ViewDetailLevel.Fine
+        geom = element.get_Geometry(opt)
+        if geom is None:
+            return curves
+        for geom_obj in geom:
+            if hasattr(geom_obj, "GetInstanceGeometry"):
+                inst_geom = geom_obj.GetInstanceGeometry()
+                if inst_geom:
+                    for g in inst_geom:
+                        if isinstance(g, Arc) or isinstance(g, Line):
+                            curves.append(g)
+            elif isinstance(geom_obj, Arc) or isinstance(geom_obj, Line):
+                curves.append(geom_obj)
+    except:
+        pass
+    return curves
+
+
+def tessellate_curve(curve, num_segments):
+    """Convert a curve into a list of XYZ points."""
+    points = []
+    for i in range(num_segments + 1):
+        param = curve.GetEndParameter(0) + (curve.GetEndParameter(1) - curve.GetEndParameter(0)) * i / num_segments
+        points.append(curve.Evaluate(param, False))
+    return points
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +144,6 @@ def build_chains(selected_elements):
     for el in selected_elements:
         if el.Id.IntegerValue in visited:
             continue
-        # skip tee/cross fittings as chain members
         if is_fitting(el) and connector_count(el) > 2:
             continue
 
@@ -115,9 +156,7 @@ def build_chains(selected_elements):
             cid = current.Id.IntegerValue
             if cid in visited:
                 continue
-            # skip tee/cross encountered during traversal
             if is_fitting(current) and connector_count(current) > 2:
-                # record boundary: find which connector links back into the chain
                 for conn in get_connectors(current):
                     for my_conn, other_conn, other_el in get_connected_pairs(conn, selected_ids):
                         if other_el.Id.IntegerValue in visited or other_el.Id.IntegerValue == cid:
@@ -135,7 +174,6 @@ def build_chains(selected_elements):
                     if oid in visited:
                         continue
                     if oid in selected_ids:
-                        # tee check
                         if is_fitting(other_el) and connector_count(other_el) > 2:
                             boundary_pairs.append((my_conn, other_conn))
                         else:
@@ -154,8 +192,7 @@ def build_chains(selected_elements):
 # ---------------------------------------------------------------------------
 
 def find_chain_ends(chain):
-    """Find elements at the ends of a linear chain (elements with at most
-    one in-chain neighbour)."""
+    """Find elements at the ends of a linear chain."""
     chain_ids = set(el.Id.IntegerValue for el in chain)
     ends = []
     for el in chain:
@@ -182,7 +219,7 @@ def order_chain(chain):
 
     ends = find_chain_ends(chain)
     if not ends:
-        return chain  # fallback: cycle or unexpected topology
+        return chain
     start = ends[0]
 
     ordered = [start]
@@ -209,6 +246,37 @@ def order_chain(chain):
     return ordered
 
 
+def get_fitting_arc(element, entry_point):
+    """Try to find the centerline arc of a fitting (elbow).
+    Returns tessellated points along the arc, or None."""
+    curves = get_fitting_geometry_curves(element)
+    conns = get_connectors(element)
+    origins = [c.Origin for c in conns]
+
+    best_arc = None
+    best_score = 1e10
+    for curve in curves:
+        if not isinstance(curve, Arc):
+            continue
+        cp0 = curve.GetEndPoint(0)
+        cp1 = curve.GetEndPoint(1)
+        score = min(cp0.DistanceTo(o) for o in origins) + min(cp1.DistanceTo(o) for o in origins)
+        if score < best_score:
+            best_score = score
+            best_arc = curve
+
+    if best_arc is None:
+        return None
+
+    arc_points = tessellate_curve(best_arc, ARC_SEGMENTS)
+
+    # orient: make sure arc_points[0] is near entry_point
+    if arc_points[-1].DistanceTo(entry_point) < arc_points[0].DistanceTo(entry_point):
+        arc_points.reverse()
+
+    return arc_points
+
+
 def extract_path_points(ordered_chain):
     """Extract ordered XYZ path points from a linearly ordered chain."""
     if not ordered_chain:
@@ -226,7 +294,6 @@ def extract_path_points(ordered_chain):
             p1 = curve.GetEndPoint(1)
 
             if not points:
-                # first element: figure out orientation
                 if i + 1 < len(ordered_chain):
                     next_el = ordered_chain[i + 1]
                     next_conns = get_connectors(next_el)
@@ -238,7 +305,6 @@ def extract_path_points(ordered_chain):
                 points.append(p0)
                 points.append(p1)
             else:
-                # orient relative to last point
                 if p1.DistanceTo(points[-1]) < p0.DistanceTo(points[-1]):
                     p0, p1 = p1, p0
                 if not points_almost_equal(p0, points[-1]):
@@ -249,26 +315,39 @@ def extract_path_points(ordered_chain):
             conns = get_connectors(el)
             origins = [c.Origin for c in conns if c.Origin is not None]
 
-            if not points:
-                if len(origins) >= 2 and i + 1 < len(ordered_chain):
+            if len(origins) < 2:
+                if origins and not points:
+                    points.append(origins[0])
+                continue
+
+            # determine entry point
+            if points:
+                entry = points[-1]
+            else:
+                if i + 1 < len(ordered_chain):
                     next_el = ordered_chain[i + 1]
                     next_conns = get_connectors(next_el)
                     next_origins = [c.Origin for c in next_conns]
-                    # find which origin is closer to the next element
                     def dist_to_next(o):
                         return min(o.DistanceTo(no) for no in next_origins) if next_origins else 1e10
                     origins.sort(key=dist_to_next)
-                    # the one farthest from next is our start
-                    points.append(origins[-1])
-                    points.append(origins[0])
-                elif origins:
-                    for o in origins:
-                        points.append(o)
+                    entry = origins[-1]
+                    points.append(entry)
+                else:
+                    entry = origins[0]
+                    points.append(entry)
+
+            # try to get arc geometry for elbows
+            arc_pts = get_fitting_arc(el, entry)
+            if arc_pts:
+                for ap in arc_pts:
+                    if not points or not points_almost_equal(ap, points[-1]):
+                        points.append(ap)
             else:
-                # sort origins by distance to last known point
-                origins.sort(key=lambda o: o.DistanceTo(points[-1]))
+                # fallback: just add connector origins
+                origins.sort(key=lambda o: o.DistanceTo(entry))
                 for o in origins:
-                    if not any(points_almost_equal(o, p) for p in points):
+                    if not any(points_almost_equal(o, p) for p in points[-3:]):
                         points.append(o)
 
     # deduplicate consecutive near-identical points
@@ -284,31 +363,65 @@ def extract_path_points(ordered_chain):
 # Flex duct creation
 # ---------------------------------------------------------------------------
 
-def get_flex_duct_type(doc):
-    """Get the first available FlexDuctType."""
-    collector = FilteredElementCollector(doc).OfClass(FlexDuctType)
-    for ft in collector:
-        return ft
-    return None
+def get_flex_duct_type_matching(doc, shape):
+    """Find a FlexDuctType matching the given shape ('round' or 'rect').
+    Falls back to any available type."""
+    all_types = list(FilteredElementCollector(doc).OfClass(FlexDuctType))
+    if not all_types:
+        return None
+
+    for ft in all_types:
+        try:
+            ft_conns = []
+            # check shape from the type's connector definitions
+            param_shape = ft.get_Parameter(BuiltInParameter.RBS_CURVETYPE_MULTISHAPE_PARAM)
+            if param_shape and param_shape.HasValue:
+                # 0 = round, 1 = rectangular, 2 = oval typically
+                val = param_shape.AsInteger()
+                if shape == "round" and val == 0:
+                    return ft
+                elif shape == "rect" and val == 1:
+                    return ft
+        except:
+            pass
+
+    # fallback: try to determine shape from the type name
+    for ft in all_types:
+        try:
+            name = DB.Element.Name.__get__(ft).lower()
+            if shape == "round" and ("round" in name or "kör" in name or "kerek" in name):
+                return ft
+            elif shape == "rect" and ("rect" in name or "négyszög" in name or "téglalap" in name):
+                return ft
+        except:
+            pass
+
+    return all_types[0]
 
 
-def get_chain_diameter(ordered_chain):
-    """Get diameter from the first duct or fitting connector in the chain."""
+def get_chain_size(ordered_chain):
+    """Get size info from the chain. Returns dict with 'shape', 'diameter', 'width', 'height'."""
     for el in ordered_chain:
         for c in get_connectors(el):
             if c.Shape == DB.ConnectorProfileType.Round:
-                return c.Radius * 2.0
+                return {
+                    "shape": "round",
+                    "diameter": c.Radius * 2.0,
+                    "width": None,
+                    "height": None,
+                }
+            elif c.Shape == DB.ConnectorProfileType.Rectangular:
+                return {
+                    "shape": "rect",
+                    "diameter": None,
+                    "width": c.Width,
+                    "height": c.Height,
+                }
     return None
 
 
 def get_chain_system_type_id(ordered_chain):
-    """Get the MechanicalSystemType id from the chain.
-
-    FlexDuct.Create needs a MechanicalSystemType ElementId.
-    We find it by matching the connector's DuctSystemType enum
-    to a MechanicalSystemType in the document.
-    """
-    # step 1: get DuctSystemType enum from a connector
+    """Get the MechanicalSystemType id from the chain."""
     duct_sys_type_enum = None
     for el in ordered_chain:
         for c in get_connectors(el):
@@ -325,7 +438,6 @@ def get_chain_system_type_id(ordered_chain):
     if duct_sys_type_enum is None:
         return None
 
-    # step 2: find a MechanicalSystemType whose SystemClassification matches
     for mst in FilteredElementCollector(doc).OfClass(MechanicalSystemType):
         try:
             if mst.SystemClassification == duct_sys_type_enum:
@@ -333,7 +445,6 @@ def get_chain_system_type_id(ordered_chain):
         except:
             pass
 
-    # step 3: fallback — return the first MechanicalSystemType
     for mst in FilteredElementCollector(doc).OfClass(MechanicalSystemType):
         return mst.Id
 
@@ -344,8 +455,9 @@ def get_chain_level_id(ordered_chain):
     """Get the level id from the chain."""
     for el in ordered_chain:
         if is_duct(el):
-            return el.get_Parameter(BuiltInParameter.RBS_START_LEVEL_PARAM).AsElementId()
-    # fallback from fittings
+            param = el.get_Parameter(BuiltInParameter.RBS_START_LEVEL_PARAM)
+            if param and param.HasValue:
+                return param.AsElementId()
     for el in ordered_chain:
         param = el.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM)
         if param and param.HasValue:
@@ -356,15 +468,13 @@ def get_chain_level_id(ordered_chain):
     return None
 
 
-def convert_chain(doc, ordered_chain, boundary_pairs, flex_type_id):
-    """Create a flex duct from the chain and reconnect boundaries.
-    Returns (FlexDuct, deleted_count) or (None, 0)."""
+def convert_chain(doc, ordered_chain, boundary_pairs, flex_type_id, size_info):
+    """Create a flex duct from the chain and reconnect boundaries."""
     points = extract_path_points(ordered_chain)
     if len(points) < 2:
         logger.warning("Chain skipped: fewer than 2 path points.")
         return None, 0
 
-    diameter = get_chain_diameter(ordered_chain)
     sys_type_id = get_chain_system_type_id(ordered_chain)
     level_id = get_chain_level_id(ordered_chain)
 
@@ -378,12 +488,23 @@ def convert_chain(doc, ordered_chain, boundary_pairs, flex_type_id):
 
     flex = FlexDuct.Create(doc, sys_type_id, flex_type_id, level_id, point_list)
 
-    if diameter is not None:
-        diam_param = flex.get_Parameter(BuiltInParameter.RBS_CURVE_DIAMETER_PARAM)
-        if diam_param and not diam_param.IsReadOnly:
-            diam_param.Set(diameter)
+    # set size from original duct
+    if size_info:
+        if size_info["shape"] == "round" and size_info["diameter"]:
+            p = flex.get_Parameter(BuiltInParameter.RBS_CURVE_DIAMETER_PARAM)
+            if p and not p.IsReadOnly:
+                p.Set(size_info["diameter"])
+        elif size_info["shape"] == "rect":
+            if size_info["width"]:
+                p = flex.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM)
+                if p and not p.IsReadOnly:
+                    p.Set(size_info["width"])
+            if size_info["height"]:
+                p = flex.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM)
+                if p and not p.IsReadOnly:
+                    p.Set(size_info["height"])
 
-    # set tangent vectors
+    # set tangent vectors for better path following
     if len(points) >= 2:
         start_tangent = (points[1] - points[0]).Normalize()
         end_tangent = (points[-1] - points[-2]).Normalize()
@@ -426,40 +547,36 @@ def convert_chain(doc, ordered_chain, boundary_pairs, flex_type_id):
 # ---------------------------------------------------------------------------
 
 def main():
-    # 1. Get selection
     sel_ids = uidoc.Selection.GetElementIds()
     if not sel_ids:
         forms.alert("Jelölj ki rigid ductokat és/vagy duct fittingeket!", exitscript=True)
 
     selected = []
-    skipped_rect = 0
     for eid in sel_ids:
         el = doc.GetElement(eid)
         if is_duct(el) or is_fitting(el):
-            if is_round(el):
-                selected.append(el)
-            else:
-                skipped_rect += 1
-        else:
-            logger.debug("Skipping non-duct element: {} ({})".format(el.Id, type(el).__name__))
+            selected.append(el)
 
     if not selected:
-        msg = "Nincs megfelelő kör keresztmetszetű duct/fitting a kijelölésben."
-        if skipped_rect > 0:
-            msg += "\n{} db négyszögletes/ovális elem kihagyva (flex duct csak kör lehet).".format(skipped_rect)
-        forms.alert(msg, exitscript=True)
+        forms.alert("Nincs duct vagy fitting a kijelölésben.", exitscript=True)
 
-    # 2. Find flex duct type
-    flex_type = get_flex_duct_type(doc)
+    # determine shape from first duct
+    chain_shape = "round"
+    for el in selected:
+        s = get_connector_shape(el)
+        if s:
+            chain_shape = s
+            break
+
+    # find matching flex duct type
+    flex_type = get_flex_duct_type_matching(doc, chain_shape)
     if flex_type is None:
         forms.alert("Nincs FlexDuctType a projektben!\nTölts be egy flex duct családot először.", exitscript=True)
 
-    # 3. Build chains
     chains = build_chains(selected)
     if not chains:
         forms.alert("Nem sikerült láncot építeni a kijelölt elemekből.", exitscript=True)
 
-    # 4. Convert
     total_flex = 0
     total_deleted = 0
     warnings = []
@@ -467,19 +584,22 @@ def main():
     with revit.Transaction("Rigid to Flex"):
         for chain, boundary_pairs in chains:
             ordered = order_chain(chain)
-            flex, deleted = convert_chain(doc, ordered, boundary_pairs, flex_type.Id)
+            size_info = get_chain_size(ordered)
+            flex, deleted = convert_chain(doc, ordered, boundary_pairs, flex_type.Id, size_info)
             if flex is not None:
                 total_flex += 1
                 total_deleted += deleted
             else:
                 warnings.append("Egy lánc ({} elem) nem konvertálható.".format(len(chain)))
 
-    # 5. Report
-    output.print_md("## Rigid → Flex konverzió kész")
+    output.print_md("## Rigid -> Flex konverzió kész")
     output.print_md("- **{}** flex duct létrehozva".format(total_flex))
     output.print_md("- **{}** eredeti elem törölve".format(total_deleted))
-    if skipped_rect > 0:
-        output.print_md("- **{}** négyszögletes elem kihagyva".format(skipped_rect))
+    if flex_type:
+        try:
+            output.print_md("- Flex típus: **{}**".format(DB.Element.Name.__get__(flex_type)))
+        except:
+            pass
     for w in warnings:
         output.print_md("- ⚠ {}".format(w))
 
