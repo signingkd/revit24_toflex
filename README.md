@@ -4,11 +4,13 @@ Revit 2024 pyRevit extension that converts selected rigid ducts and duct fitting
 
 ## Features
 
-- Converts rigid round ducts and fittings (elbows, transitions) to a single flex duct
-- Preserves the original route, diameter, system type, and level
+- Converts rigid ducts and fittings (elbows, transitions) to flex ducts
+- Supports both round and rectangular duct cross-sections
+- Preserves the original route, size, system type, and level
+- Accurate path following with intermediate vertices (~1m spacing on straight sections)
+- Arc tessellation at elbows for tight bend approximation
 - Reconnects to adjacent elements automatically
 - Stops at tee/branch fittings (flex duct cannot branch)
-- Skips rectangular/oval ducts with a warning
 
 ## Installation
 
