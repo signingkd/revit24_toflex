@@ -33,7 +33,7 @@ doc = revit.doc
 uidoc = revit.uidoc
 
 TOLERANCE = 0.001  # feet
-ARC_SEGMENTS = 8   # number of segments to approximate arcs in fittings
+ARC_SEGMENTS = 16  # number of segments to approximate arcs in fittings
 
 
 # ---------------------------------------------------------------------------
@@ -503,16 +503,6 @@ def convert_chain(doc, ordered_chain, boundary_pairs, flex_type_id, size_info):
                 p = flex.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM)
                 if p and not p.IsReadOnly:
                     p.Set(size_info["height"])
-
-    # set tangent vectors for better path following
-    if len(points) >= 2:
-        start_tangent = (points[1] - points[0]).Normalize()
-        end_tangent = (points[-1] - points[-2]).Normalize()
-        try:
-            flex.StartTangent = start_tangent
-            flex.EndTangent = end_tangent
-        except:
-            pass
 
     # reconnect boundaries
     flex_conns = get_connectors(flex)
