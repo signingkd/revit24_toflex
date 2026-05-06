@@ -14,18 +14,18 @@ Revit 2024 pyRevit extension that converts selected rigid ducts and duct fitting
 
 ### Option 1 — Git URL (recommended)
 
-1. Open pyRevit Settings → Custom Extension Directories
-2. Or use the pyRevit CLI:
-   ```
-   pyrevit extend lib RigidToFlex "https://github.com/YOUR_USERNAME/revit24_toflex.git"
-   ```
-3. Reload pyRevit or restart Revit
+Use the pyRevit CLI:
+```
+pyrevit extend lib RigidToFlex "https://github.com/signingkd/revit24_toflex.git"
+```
+Then reload pyRevit or restart Revit.
 
 ### Option 2 — Manual
 
 1. Clone or download this repository
-2. Copy the `RigidToFlex.extension` folder to `%APPDATA%\pyRevit-Master\extensions\`
-3. Reload pyRevit or restart Revit
+2. Rename the cloned folder to `RigidToFlex.extension`
+3. Place it in `%APPDATA%\pyRevit-Master\extensions\`
+4. Reload pyRevit or restart Revit
 
 ## Usage
 
