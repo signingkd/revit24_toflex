@@ -372,39 +372,15 @@ def convert_chain(doc, ordered_chain, boundary_pairs, flex_type_id):
         logger.warning("Chain skipped: could not determine system type or level.")
         return None, 0
 
-    # DEBUG
-    sys_type_el = doc.GetElement(sys_type_id)
-    output.print_md("**DEBUG** sys_type_id={}, element={}".format(sys_type_id, sys_type_el))
-    if sys_type_el is not None:
-        output.print_md("**DEBUG** type={}, category={}".format(
-            type(sys_type_el).__name__,
-            sys_type_el.Category.Name if sys_type_el.Category else "no category"))
-        try:
-            output.print_md("**DEBUG** element name via param: {}".format(
-                sys_type_el.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_NAME)))
-        except:
-            pass
-    output.print_md("**DEBUG** MechanicalSystemType count: {}".format(
-        FilteredElementCollector(doc).OfClass(MechanicalSystemType).GetElementCount()))
-    for mst in FilteredElementCollector(doc).OfClass(MechanicalSystemType):
-        try:
-            output.print_md("**DEBUG** MST: Id={}, type={}, Classification={}".format(
-                mst.Id, type(mst).__name__, mst.SystemClassification))
-        except Exception as ex:
-            output.print_md("**DEBUG** MST: Id={}, ERROR={}".format(mst.Id, ex))
-    for el in ordered_chain[:2]:
-        for c in get_connectors(el):
-            try:
-                output.print_md("**DEBUG** Conn el={}: DuctSystemType={}, Domain={}, MEPSystem={}".format(
-                    el.Id, c.DuctSystemType, c.Domain, c.MEPSystem))
-            except Exception as ex:
-                output.print_md("**DEBUG** Conn el={}: ERROR={}".format(el.Id, ex))
-
     point_list = List[XYZ]()
     for p in points:
         point_list.Add(p)
 
-    flex = FlexDuct.Create(doc, flex_type_id, sys_type_id, level_id, point_list)
+    # Try creating with the system type; fall back to InvalidElementId
+    try:
+        flex = FlexDuct.Create(doc, flex_type_id, sys_type_id, level_id, point_list)
+    except:
+        flex = FlexDuct.Create(doc, flex_type_id, ElementId.InvalidElementId, level_id, point_list)
 
     if diameter is not None:
         diam_param = flex.get_Parameter(BuiltInParameter.RBS_CURVE_DIAMETER_PARAM)
